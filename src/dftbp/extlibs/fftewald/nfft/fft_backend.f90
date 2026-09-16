@@ -20,8 +20,8 @@ module fft_backend
    include 'fftw3.f03'
 
    private
-   public :: fft_1d_inplace, fft_2d_inplace, fft_3d_inplace
-   public :: fft_2d_real_to_complex, fft_3d_real_to_complex
+   public :: fft_3d_inplace
+   public :: fft_3d_real_to_complex
    public :: next_fast_length, minTransformLength
 
    !> Shortest transform the library will use along any axis.  Below this the
@@ -39,58 +39,6 @@ contains
    ! =====================================================================
    !  Complex transforms
    ! =====================================================================
-
-   !> One-dimensional in-place transform of a complex vector.
-   !>
-   !> Deliberately single-threaded and plan-cached.  Its only caller is the
-   !> transform of the regularised slab kernel, which is short and is repeated
-   !> once per in-plane mode with identical length and direction, so planning
-   !> would otherwise dominate the transform itself.  The unaligned flag keeps
-   !> the cached plan valid for whatever array the next caller passes.
-   !>
-   !> The cache makes this routine unsafe to call from several threads at once;
-   !> its callers are serial loops.
-   subroutine fft_1d_inplace(vector, n, isign)
-      integer, intent(in) :: n
-      integer, intent(in) :: isign
-      complex(dp), intent(inout) :: vector(0:n - 1)
-
-      type(C_PTR), save :: plan = C_NULL_PTR     ! the cached plan
-      integer, save :: cachedLength = -1         ! length it was built for
-      integer, save :: cachedDirection = 0       ! direction it was built for
-
-      if (n /= cachedLength .or. fftw_direction(isign) /= cachedDirection) then
-         if (c_associated(plan)) call fftw_destroy_plan(plan)
-         ! The estimating planner is used because it does not overwrite the
-         ! input array while planning, which a measuring planner would.
-         plan = fftw_plan_dft_1d(int(n, C_INT), vector, vector, &
-                                 fftw_direction(isign), &
-                                 ior(FFTW_ESTIMATE, FFTW_UNALIGNED))
-         cachedLength = n
-         cachedDirection = fftw_direction(isign)
-      end if
-
-      call fftw_execute_dft(plan, vector, vector)
-
-   end subroutine fft_1d_inplace
-
-   !> Two-dimensional in-place transform of a complex grid.
-   subroutine fft_2d_inplace(grid, n1, n2, isign)
-      integer, intent(in) :: n1
-      integer, intent(in) :: n2
-      integer, intent(in) :: isign
-      complex(dp), intent(inout) :: grid(0:n1 - 1, 0:n2 - 1)
-
-      type(C_PTR) :: plan
-
-      call plan_over_all_threads()
-      ! Dimensions reversed: see the note on storage order in the module header.
-      plan = fftw_plan_dft_2d(int(n2, C_INT), int(n1, C_INT), &
-                              grid, grid, fftw_direction(isign), FFTW_ESTIMATE)
-      call fftw_execute_dft(plan, grid, grid)
-      call fftw_destroy_plan(plan)
-
-   end subroutine fft_2d_inplace
 
    !> Three-dimensional in-place transform of a complex grid.
    subroutine fft_3d_inplace(grid, n1, n2, n3, isign)
@@ -114,46 +62,9 @@ contains
    !  Real-input transforms
    ! =====================================================================
 
-   !> Two-dimensional in-place transform of a real grid.
-   !>
-   !> The charge spreading of the non-uniform transform produces a purely real
-   !> grid, whose spectrum is Hermitian, so only the indices 0..n1/2 along the
-   !> first axis are stored.  That halves the memory the long-range branch
-   !> needs.
-   !>
-   !> The two arrays must alias the same storage for the transform to be in
-   !> place: the caller allocates a real grid whose first dimension is padded
-   !> to 2*(n1/2+1) and points a complex view at it.
-   !>
-   !> FFTW's real-input transform is fixed to the sign -1 direction whereas the
-   !> adjoint non-uniform transform uses sign +1.  For a real input the two
-   !> differ by complex conjugation alone, so the magnitudes an energy needs
-   !> are identical; a caller needing the signed structure factor must use the
-   !> complex transform instead.
-   subroutine fft_2d_real_to_complex(realGrid, complexGrid, n1, n2)
-      integer, intent(in) :: n1
-      integer, intent(in) :: n2
-
-      !> Padded real grid: logical extent (n1, n2), leading dimension
-      !> 2*(n1/2+1).  Overwritten by the transform.
-      real(dp), intent(inout) :: realGrid(0:2*(n1/2 + 1) - 1, 0:n2 - 1)
-
-      !> Complex view of the same storage, receiving the half spectrum.
-      complex(dp), intent(inout) :: complexGrid(0:n1/2, 0:n2 - 1)
-
-      type(C_PTR) :: plan
-
-      call plan_over_all_threads()
-      plan = fftw_plan_dft_r2c_2d(int(n2, C_INT), int(n1, C_INT), &
-                                  realGrid, complexGrid, FFTW_ESTIMATE)
-      call fftw_execute_dft_r2c(plan, realGrid, complexGrid)
-      call fftw_destroy_plan(plan)
-
-   end subroutine fft_2d_real_to_complex
-
-   !> Three-dimensional in-place transform of a real grid.  Same idea, same
-   !> conventions and the same aliasing requirement as the two-dimensional
-   !> version above.
+   !> Three-dimensional in-place transform of a real grid.  The two arrays
+   !> alias the same storage: the real grid is padded along its first dimension
+   !> and the complex view receives the half spectrum.
    subroutine fft_3d_real_to_complex(realGrid, complexGrid, n1, n2, n3)
       integer, intent(in) :: n1
       integer, intent(in) :: n2

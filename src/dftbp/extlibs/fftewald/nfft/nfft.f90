@@ -24,24 +24,24 @@ module nfft
    !> error falls exponentially in m while the cost grows like m to the power
    !> of the dimension, which is why m is derived from the requested accuracy.
    !>
-   !> spread_charges_real_2d and _3d are an energy-only shortcut.  The Ewald
+   !> spread_charges_real_3d is an energy-only shortcut.  The Ewald
    !> energy needs only the squared magnitudes of the structure factors and the
    !> spread grid is purely real, so a caller in that situation can spread onto
    !> a real grid, run a real-input FFT itself and fold the deconvolution into
-   !> its own mode sum, which halves the grid memory.  Those routines therefore
-   !> stop after step 1 and export the window parameters so that the caller can
+   !> its own mode sum, which halves the grid memory.  The routine therefore
+   !> stops after step 1 and exports the window parameters so that the caller can
    !> finish with exactly the same window.
    !>
    !> Modes come back in the usual FFT bin order: array index a in 0..M-1 holds
    !> the signed mode mode_of_bin(a, M).
    use ewald_constants, only: dp, pi
-   use fft_backend, only: fft_2d_inplace, fft_3d_inplace
+   use fft_backend, only: fft_3d_inplace
    implicit none
 
    private
-   public :: adjoint_nfft_2d, adjoint_nfft_3d
-   public :: forward_nfft_2d, forward_nfft_3d
-   public :: spread_charges_real_2d, spread_charges_real_3d
+   public :: adjoint_nfft_3d
+   public :: forward_nfft_3d
+   public :: spread_charges_real_3d
    public :: mode_of_bin, window_shape, window_cutoff_from_budget
    public :: oversampling
 
@@ -201,88 +201,6 @@ contains
    !  Adjoint transforms: particles to modes
    ! =====================================================================
 
-   !> Adjoint transform in two dimensions: structure factors of N charges.
-   subroutine adjoint_nfft_2d(nParticle, t1, t2, q, M1, M2, m, Shat)
-
-      !> Number of charges.
-      integer, intent(in) :: nParticle
-
-      !> First coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t1(nParticle)
-
-      !> Second coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t2(nParticle)
-
-      !> Charge carried by each node.
-      real(dp), intent(in) :: q(nParticle)
-
-      !> Number of retained modes along the first axis.
-      integer, intent(in) :: M1
-
-      !> Number of retained modes along the second axis.
-      integer, intent(in) :: M2
-
-      !> Stencil half-width.
-      integer, intent(in) :: m
-
-      !> Structure factors, in FFT bin order along both axes.
-      complex(dp), intent(out) :: Shat(0:M1 - 1, 0:M2 - 1)
-
-      integer  :: n1, n2                  ! fine grid extents
-      integer  :: j                       ! charge index
-      integer  :: o1, o2                  ! stencil offsets
-      integer  :: c1, c2                  ! lowest stencil point per axis
-      integer  :: i1, i2                  ! fine grid indices being written
-      integer  :: a1, a2                  ! output bins
-      real(dp) :: b                       ! window shape parameter
-      real(dp) :: chargeTimesWeight       ! charge folded with the outer weights
-      real(dp) :: w1(-m:m), w2(-m:m)      ! stencil weights per axis
-      complex(dp), allocatable :: fineGrid(:, :)
-      integer, allocatable  :: index1(:), index2(:)
-      real(dp), allocatable :: factor1(:), factor2(:)
-
-      n1 = oversampling*M1
-      n2 = oversampling*M2
-      b = window_shape(m)
-      allocate (fineGrid(0:n1 - 1, 0:n2 - 1))
-      fineGrid = (0.0_dp, 0.0_dp)
-
-      ! Step 1: spread each charge over its stencil.  The stencils of different
-      ! charges overlap, so the grid is a shared write target and every update
-      ! has to be atomic.  Only the real part is ever touched.
-      !$omp parallel do default(shared) &
-      !$omp private(j, c1, c2, w1, w2, o1, o2, i1, i2, chargeTimesWeight) schedule(guided)
-      do j = 1, nParticle
-         if (q(j) == 0.0_dp) cycle
-         call stencil_weights(t1(j), n1, m, b, c1, w1)
-         call stencil_weights(t2(j), n2, m, b, c2, w2)
-         do o2 = -m, m
-            i2 = modulo(c2 + o2, n2)
-            chargeTimesWeight = q(j)*w2(o2)
-            do o1 = -m, m
-               i1 = modulo(c1 + o1, n1)
-               !$omp atomic update
-               fineGrid(i1, i2)%re = fineGrid(i1, i2)%re + chargeTimesWeight*w1(o1)
-            end do
-         end do
-      end do
-      !$omp end parallel do
-
-      ! Step 2: one ordinary transform of the whole grid.
-      call fft_2d_inplace(fineGrid, n1, n2, 1)
-
-      ! Step 3: keep the low modes and divide out the window.
-      allocate (index1(0:M1 - 1), factor1(0:M1 - 1), index2(0:M2 - 1), factor2(0:M2 - 1))
-      call deconvolution_table(M1, n1, b, index1, factor1)
-      call deconvolution_table(M2, n2, b, index2, factor2)
-      do a2 = 0, M2 - 1
-         do a1 = 0, M1 - 1
-            Shat(a1, a2) = fineGrid(index1(a1), index2(a2))*factor1(a1)*factor2(a2)
-         end do
-      end do
-
-   end subroutine adjoint_nfft_2d
-
    !> Adjoint transform in three dimensions: structure factors of N charges.
    subroutine adjoint_nfft_3d(nParticle, t1, t2, t3, q, M1, M2, M3, m, Shat, phaseTimes)
 
@@ -342,7 +260,7 @@ contains
       fineGrid = (0.0_dp, 0.0_dp)
 
       ! Step 1: spread.  Shared grid, overlapping stencils, atomic updates on
-      ! the real part only, exactly as in the two-dimensional case.
+      ! the real part only.
       call system_clock(tick0, tickRate)
       !$omp parallel do default(shared) &
       !$omp private(j, c1, c2, c3, w1, w2, w3, o1, o2, o3, i1, i2, i3, chargeTimesWeight) &
@@ -399,95 +317,8 @@ contains
    !  Forward transforms: modes to particles
    ! =====================================================================
 
-   !> Forward transform in two dimensions: evaluate a trigonometric polynomial
-   !> with the given coefficients at the nodes,
-   !>
-   !>   f(t_j) = sum_k fhat(k) exp(-2 pi i k . t_j).
-   !>
-   !> The exact transpose of adjoint_nfft_2d, running its three steps in
-   !> reverse with the conjugate transform sign.  It is what the per-atom
-   !> potential and force need and the energy path never does.
-   subroutine forward_nfft_2d(nParticle, t1, t2, M1, M2, m, fhat, f)
-
-      !> Number of nodes to evaluate at.
-      integer, intent(in) :: nParticle
-
-      !> First coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t1(nParticle)
-
-      !> Second coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t2(nParticle)
-
-      !> Number of modes along the first axis.
-      integer, intent(in) :: M1
-
-      !> Number of modes along the second axis.
-      integer, intent(in) :: M2
-
-      !> Stencil half-width.
-      integer, intent(in) :: m
-
-      !> Fourier coefficients, in FFT bin order along both axes.
-      complex(dp), intent(in) :: fhat(0:M1 - 1, 0:M2 - 1)
-
-      !> The polynomial evaluated at each node.
-      complex(dp), intent(out) :: f(nParticle)
-
-      integer  :: n1, n2
-      integer  :: j, o1, o2, c1, c2, i1, i2, a1, a2
-      real(dp) :: b
-      complex(dp) :: accumulator          ! the value being gathered for node j
-      real(dp) :: w1(-m:m), w2(-m:m)
-      real(dp) :: outerWeight             ! the second-axis weight, hoisted out
-      complex(dp), allocatable :: fineGrid(:, :)
-      integer, allocatable  :: index1(:), index2(:)
-      real(dp), allocatable :: factor1(:), factor2(:)
-
-      n1 = oversampling*M1
-      n2 = oversampling*M2
-      b = window_shape(m)
-      allocate (fineGrid(0:n1 - 1, 0:n2 - 1))
-      fineGrid = (0.0_dp, 0.0_dp)
-
-      ! Step 1: place the coefficients on the fine grid, pre-divided by the
-      ! window's transform, exactly as the adjoint divides after transforming.
-      allocate (index1(0:M1 - 1), factor1(0:M1 - 1), index2(0:M2 - 1), factor2(0:M2 - 1))
-      call deconvolution_table(M1, n1, b, index1, factor1)
-      call deconvolution_table(M2, n2, b, index2, factor2)
-      do a2 = 0, M2 - 1
-         do a1 = 0, M1 - 1
-            fineGrid(index1(a1), index2(a2)) = fhat(a1, a2)*factor1(a1)*factor2(a2)
-         end do
-      end do
-
-      ! Step 2: transform with the sign conjugate to the adjoint's.
-      call fft_2d_inplace(fineGrid, n1, n2, -1)
-
-      ! Step 3: gather the grid back to each node with the same stencil.  Each
-      ! iteration writes only its own output, so no atomics are needed.
-      !$omp parallel do default(shared) &
-      !$omp private(j, c1, c2, w1, w2, o1, o2, i1, i2, accumulator, outerWeight) &
-      !$omp schedule(guided)
-      do j = 1, nParticle
-         call stencil_weights(t1(j), n1, m, b, c1, w1)
-         call stencil_weights(t2(j), n2, m, b, c2, w2)
-         accumulator = (0.0_dp, 0.0_dp)
-         do o2 = -m, m
-            i2 = modulo(c2 + o2, n2)
-            outerWeight = w2(o2)
-            do o1 = -m, m
-               i1 = modulo(c1 + o1, n1)
-               accumulator = accumulator + w1(o1)*outerWeight*fineGrid(i1, i2)
-            end do
-         end do
-         f(j) = accumulator
-      end do
-      !$omp end parallel do
-
-   end subroutine forward_nfft_2d
-
-   !> Forward transform in three dimensions.  The three-dimensional case of
-   !> forward_nfft_2d and the exact transpose of adjoint_nfft_3d.
+   !> Forward transform in three dimensions, the exact transpose of
+   !> adjoint_nfft_3d.
    subroutine forward_nfft_3d(nParticle, t1, t2, t3, M1, M2, M3, m, fhat, f)
 
       !> Number of nodes to evaluate at.
@@ -585,68 +416,7 @@ contains
    !  Energy-only spreading onto a real grid
    ! =====================================================================
 
-   !> Spread charges onto a padded real grid in two dimensions: step 1 of
-   !> adjoint_nfft_2d with a real target, for callers that need only squared
-   !> magnitudes and run their own real-input transform.  The grid's first
-   !> dimension is padded to 2*(n1/2+1), the layout an in-place real-input
-   !> transform requires; only the logical columns are written.
-   subroutine spread_charges_real_2d(nParticle, t1, t2, q, n1, n2, m, grid)
-
-      !> Number of charges.
-      integer, intent(in) :: nParticle
-
-      !> First coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t1(nParticle)
-
-      !> Second coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t2(nParticle)
-
-      !> Charge carried by each node.
-      real(dp), intent(in) :: q(nParticle)
-
-      !> Logical extent of the fine grid along the first axis.
-      integer, intent(in) :: n1
-
-      !> Extent of the fine grid along the second axis.
-      integer, intent(in) :: n2
-
-      !> Stencil half-width.
-      integer, intent(in) :: m
-
-      !> Padded real grid, accumulated into.
-      real(dp), intent(inout) :: grid(0:2*(n1/2 + 1) - 1, 0:n2 - 1)
-
-      integer  :: j, o1, o2, c1, c2, i1, i2
-      real(dp) :: b
-      real(dp) :: chargeTimesWeight
-      real(dp) :: w1(-m:m), w2(-m:m)
-
-      b = window_shape(m)
-
-      ! Same shared-grid scatter as the adjoint transform, so the same atomic
-      ! updates.
-      !$omp parallel do default(shared) &
-      !$omp private(j, c1, c2, w1, w2, o1, o2, i1, i2, chargeTimesWeight) schedule(guided)
-      do j = 1, nParticle
-         if (q(j) == 0.0_dp) cycle
-         call stencil_weights(t1(j), n1, m, b, c1, w1)
-         call stencil_weights(t2(j), n2, m, b, c2, w2)
-         do o2 = -m, m
-            i2 = modulo(c2 + o2, n2)
-            chargeTimesWeight = q(j)*w2(o2)
-            do o1 = -m, m
-               i1 = modulo(c1 + o1, n1)
-               !$omp atomic update
-               grid(i1, i2) = grid(i1, i2) + chargeTimesWeight*w1(o1)
-            end do
-         end do
-      end do
-      !$omp end parallel do
-
-   end subroutine spread_charges_real_2d
-
-   !> Spread charges onto a padded real grid in three dimensions.  The
-   !> three-dimensional counterpart of spread_charges_real_2d.
+   !> Spread charges onto a padded real grid in three dimensions.
    subroutine spread_charges_real_3d(nParticle, t1, t2, t3, q, n1, n2, n3, m, grid)
 
       !> Number of charges.

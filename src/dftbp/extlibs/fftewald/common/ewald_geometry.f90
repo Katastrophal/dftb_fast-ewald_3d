@@ -13,11 +13,10 @@ module ewald_geometry
 
    private
    public :: cross_product
-   public :: TCell3d, TCell2d, cell_metrics_3d, cell_metrics_2d
+   public :: TCell3d, cell_metrics_3d
 
    !> Below these the cell counts as collapsed and its dual basis is meaningless.
    real(dp), parameter :: min_volume = 1.0e-18_dp
-   real(dp), parameter :: min_area = 1.0e-18_dp
 
    !> Geometry of a cell that is periodic in all three directions.
    type :: TCell3d
@@ -43,31 +42,6 @@ module ewald_geometry
       real(dp) :: recLengths(3) = 0.0_dp
 
    end type TCell3d
-
-   !> Geometry of a cell that is periodic in two directions and open in the
-   !> third.  Rows 1 and 2 of latVecs span the periodic plane; row 3 is ignored
-   !> and the extent along the normal is read off the particle positions.
-   type :: TCell2d
-
-      !> Real-space lattice vectors, one per row.  Only rows 1 and 2 are used.
-      real(dp) :: latVecs(3, 3) = 0.0_dp
-
-      !> In-plane crystallographic dual basis, one per row (no factor of 2*pi).
-      real(dp) :: recVecs(2, 3) = 0.0_dp
-
-      !> Area |a1 x a2| of the two-dimensional cell.
-      real(dp) :: area = 0.0_dp
-
-      !> The un-normalised plane normal a1 x a2, whose length is the area.
-      real(dp) :: normal(3) = 0.0_dp
-
-      !> Lengths |a_1|, |a_2| of the in-plane lattice vectors.
-      real(dp) :: latLengths(2) = 0.0_dp
-
-      !> Lengths |b_1|, |b_2| of the in-plane dual basis.
-      real(dp) :: recLengths(2) = 0.0_dp
-
-   end type TCell2d
 
 contains
 
@@ -117,36 +91,5 @@ contains
                          sqrt(sum(cell%recVecs(3, :)**2))]
 
    end function cell_metrics_3d
-
-   !> Derive the geometry of a two-dimensionally periodic cell.  Only the first
-   !> two rows of latVecs are read.
-   function cell_metrics_2d(latVecs) result(cell)
-
-      !> Real-space lattice vectors, one per row; row 3 is ignored.
-      real(dp), intent(in) :: latVecs(3, 3)
-
-      !> Area, plane normal, dual basis and the lengths of both bases.
-      type(TCell2d) :: cell
-
-      real(dp) :: a1(3), a2(3)
-
-      a1 = latVecs(1, :)
-      a2 = latVecs(2, :)
-
-      cell%latVecs = latVecs
-      cell%normal = cross_product(a1, a2)
-      cell%area = sqrt(sum(cell%normal**2))
-      if (cell%area <= min_area) error stop "ewald_geometry: cell area too small"
-
-      ! Crossing a2 (respectively a1) with the normal rotates it within the
-      ! plane; dividing by the squared area normalises it to b_i . a_j = delta_ij.
-      cell%recVecs(1, :) = cross_product(a2, cell%normal)/cell%area**2
-      cell%recVecs(2, :) = cross_product(cell%normal, a1)/cell%area**2
-
-      cell%latLengths = [sqrt(sum(a1**2)), sqrt(sum(a2**2))]
-      cell%recLengths = [sqrt(sum(cell%recVecs(1, :)**2)), &
-                         sqrt(sum(cell%recVecs(2, :)**2))]
-
-   end function cell_metrics_2d
 
 end module ewald_geometry

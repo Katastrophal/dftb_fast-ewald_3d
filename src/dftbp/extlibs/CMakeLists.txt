@@ -46,17 +46,11 @@ set(sources-fftewald-f90
   ${curdir}/fftewald/common/ewald_self.f90
   ${curdir}/fftewald/common/ewald_truncation.f90
   ${curdir}/fftewald/common/ewald_validation.f90
-  ${curdir}/fftewald/direct/ewald_direct_2d.f90
   ${curdir}/fftewald/direct/ewald_direct_3d.f90
-  ${curdir}/fftewald/fft/ewald_fft_2d.f90
-  ${curdir}/fftewald/fft/ewald_fft_2d_fourier.f90
-  ${curdir}/fftewald/fft/ewald_fft_2d_parameters.f90
-  ${curdir}/fftewald/fft/ewald_fft_2d_real.f90
   ${curdir}/fftewald/fft/ewald_fft_3d.f90
   ${curdir}/fftewald/fft/ewald_fft_3d_fourier.f90
   ${curdir}/fftewald/fft/ewald_fft_3d_parameters.f90
   ${curdir}/fftewald/fft/ewald_fft_3d_real.f90
-  ${curdir}/fftewald/fft/ewald_slab_kernel.f90
   ${curdir}/fftewald/nfft/fft_backend.f90
   ${curdir}/fftewald/nfft/nfft.f90)
 

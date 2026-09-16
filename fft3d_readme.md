@@ -1,0 +1,48 @@
+# Fast 3D Ewald integration in DFTB+
+
+This fork adds a matrix-free fast Ewald operator for the long-range Coulomb part of three-dimensionally periodic SCC-DFTB. It is currently an opt-in path:
+
+```sh
+DFTB_FFT_EWALD=1 dftb+
+```
+
+The 3D fast path is used only for a charge-neutral, 3D-periodic SCC calculation in a serial or OpenMP build. Unset `DFTB_FFT_EWALD`, set it to `0`, or use an MPI/ScaLAPACK build to retain the original DFTB+ engine.
+
+## How the fast path works
+
+The implementation is a conventional Ewald split with fast algorithms on both sides:
+
+- The real-space screened sum is evaluated with a linked-cell neighbour search. Small cells, for which the minimum image is not unique, use an explicit real-space image sum.
+- The reciprocal-space sum uses a non-uniform FFT (NFFT): charges are spread to a grid, an FFT produces the structure factors, the Ewald kernel is applied in Fourier space, and the result is interpolated back to the atoms.
+- The self interaction is added analytically. The splitting parameter, real- and reciprocal-space cutoffs, FFT mode counts, and NFFT window are selected automatically from the cell, charges, and DFTB+ `EwaldTolerance`.
+- The resulting work is approximately `O(N + M log M)`, where `M` is the FFT-grid size. No atomic `N x N` interaction matrix is needed for the ordinary fast calculation.
+
+The DFTB+ integration is concentrated in [`coulomb.F90`](src/dftbp/dftb/coulomb.F90):
+
+1. During every SCC iteration, `updateShifts` calls `fftEwaldShift`. This computes the per-atom electrostatic potential directly and replaces the original `invRMat * deltaQAtom` operation.
+2. `addEnergy` keeps the existing DFTB+ energy expression, `0.5 * sum(q * potential)`.
+3. When ordinary nuclear gradients are requested, `addGradients` calls `fftEwaldAddGradients`. The fast library returns physical forces, which the adapter changes to the energy-gradient sign used by DFTB+.
+4. DFTB+ stores coordinates and lattice vectors by column, whereas the fast library expects particles and lattice vectors by row; the adapter transposes these representations and otherwise keeps atomic units unchanged.
+
+Potential-only SCC evaluations require one adjoint NFFT and one forward NFFT. A force evaluation additionally performs one forward transform for each Cartesian component. The implementation is in [`ewald_fft_3d.f90`](src/dftbp/extlibs/fftewald/fft/ewald_fft_3d.f90), with the real-space, Fourier-space, and parameter-selection parts in the neighbouring `ewald_fft_3d_*` modules.
+
+Important integration constraints are that the fast solver currently requires charge neutrality, ignores a manually supplied DFTB+ `EwaldParameter` because it selects its own consistent parameters, and is not distributed over MPI processes. Setting `DFTB_EWALD_DIRECT=1` while the fast path is enabled deliberately replaces it with the copied direct `O(N^2)` reference implementation for validation; this is not the original DFTB+ engine discussed below.
+
+## Where the original DFTB+ engine is still used or required
+
+This does **not** all happen on every DFTB+ run. In a typical neutral serial/OpenMP 3D-periodic SCC calculation, the SCC potentials and ordinary forces use the fast engine. Original-engine setup and matrix allocation still occur on every such run, and the original stress routine is normally called because DFTB+ enables stress for periodic force calculations. The remaining rows are reached only by the listed calculation type or feature. Most are automatic fallbacks; the explicit-matrix interfaces instead stop and require the original engine to be selected for a new run.
+
+| Remaining dependency | When is it reached with `DFTB_FFT_EWALD=1`? | Why it remains | How to remove it |
+| --- | --- | --- | --- |
+| Original Ewald setup and matrix storage | **Every 3D-periodic SCC run.** `TCoulomb_init` still allocates `invRMat`; `updateLatVecs` prepares the original splitting parameter, lattice-point lists, translations, and neighbour-list cutoff; `updateCoords` updates that neighbour list. The matrix is allocated but is not built for the normal neutral fast path. | The fast and original paths share `TCoulomb`, and later stress or fallback calls expect the original data to exist. | Make the matrix and original Ewald state lazy. Allocate and initialise them only when a remaining consumer requests them, then delete the state after the last consumer has a fast replacement. |
+| Electrostatic stress | **Whenever stress is evaluated.** This is normally every geometry step of a periodic calculation with forces; DFTB+ disables it for some modes, including external-charge, NEGF, and hybrid-XC cases. `addStress` always calls the original `invRStress`. | Particle forces are not sufficient to obtain the complete periodic cell derivative. The fast solver has no derivative with respect to lattice deformation. | Implement fast stress, including real-space, reciprocal-space, volume, and approximation-parameter terms. Validate it against finite differences at fixed fractional coordinates and the direct 3D reference. |
+| Non-neutral periodic cells | **Only when the current atomic charge vector has a non-zero net charge.** `canUseEwaldCode` rejects the fast solve; `updateShifts` then builds the original matrix lazily and the original force derivative is used. | The fast library currently defines only the neutral periodic sum, while DFTB+ has an existing charged-cell convention. | Add a documented compensating-background and potential-reference convention to the fast method, including consistent energy, potential, force, and stress terms. |
+| XLBOMD electrostatic gradients | **Only for periodic XLBOMD force evaluations.** The ordinary SCC potential can be fast, but `addGradients` calls the original `addInvRPrimeXlbomd`. | XLBOMD needs a mixed derivative involving the input and output charge vectors; the fast force interface accepts only one charge vector. | Add a mixed-charge fast derivative or the equivalent operator contraction and validate it against the original routine and finite differences. |
+| MPI or ScaLAPACK calculations | **Every run made with such a build.** `useFftEwald` forces the fast selection off, so the distributed original matrix and `pblasfx_psymv` path are used. | Charge spreading, FFT grids, interpolation, and reductions are currently local to one process. | Add distributed grids and particle communication/reductions, then replace the distributed matrix-vector product with a distributed fast operator. |
+| Pair-resolved gamma matrices | **Only for consumers such as periodic REKS, parts of linear response, and pp-RPA.** With the fast path selected, the guarded serial interfaces currently stop instead of silently constructing the original matrix; the calculation must be rerun with `DFTB_FFT_EWALD=0`. | These interfaces explicitly request all atom-pair entries, while the fast integration provides only an operator action. | Refactor consumers to use the operator contractions they actually need. If a full matrix is genuinely required, materialising it necessarily retains `O(N^2)` output and storage. |
+| Pair and displacement derivatives | **Only when analytical REKS, response, or perturbation code requests them.** `getGammaDeriv` uses `addInvRPrimePeriodicMat`, and `addPotentialDeriv` uses the original periodic `invRPrime`. | The callers ask for individual matrix-element derivatives or the derivative of a potential under one atom's displacement; these are not exposed by the fast API. | Express each consumer as a derivative/operator contraction and implement it through a differentiable fast operator. A complete pair-derivative tensor cannot avoid quadratic output without changing its consumer. |
+| Potentials at arbitrary points and external point charges | **Only when electrostatic-potential output, the library API, or external charges request source-to-target potentials or gradients.** `getPotential`, `getPotentialGradient`, and `addExternalPotGrad` call the original asymmetric periodic helpers. | The fast interface currently evaluates atom-to-atom potentials and forces for one charge set only. The old path also handles Gaussian-blurred charges and short-distance softening. | Add a source-to-target fast potential/gradient interface with the same blur, softening, and background conventions, and route these callers through it. |
+
+The central integration issue is therefore the API shape, not the Ewald split itself. Ordinary SCC needs only `q -> potential` and a final contracted force, which the fast solver already provides. The remaining DFTB+ features ask for stress, mixed-charge derivatives, arbitrary source/target sets, or explicit pair matrices. Replacing those interfaces where possible, followed by lazy removal of the original state, would make the normal fast path fully independent without forcing every specialised feature to materialise an `N x N` matrix.
+
+Related call sites are in [`scc.F90`](src/dftbp/dftb/scc.F90), [`reksgrad.F90`](src/dftbp/reks/reksgrad.F90), [`linrespgrad.F90`](src/dftbp/timedep/linrespgrad.F90), and [`pprpa.F90`](src/dftbp/timedep/pprpa.F90).

@@ -7,8 +7,8 @@ module ewald_alpha_search
    !> branches converge at the same rate, taken concretely as: the drop of the
    !> summand between two successive shells is the same in both.  That
    !> condition is monotone in alpha, so it is solved by bracketing and
-   !> bisection.  Both direct references use this search and differ only in how
-   !> a single Fourier mode contributes.
+   !> bisection.  The direct 3d reference uses this search and differs only in
+   !> how a single Fourier mode contributes.
    !>
    !> A tiny or very anisotropic cell can leave the condition without a sign
    !> change, in which case there is nothing to bisect.  The search then returns
@@ -80,11 +80,8 @@ contains
    !> summand between the second and third real shells.  It is negative while
    !> the Fourier sum converges faster and positive once the real-space sum
    !> does, so a sign change brackets the balance point.
-   subroutine balanced_alpha(dim, minG, minR, cellMeasure, tolerance, &
+   subroutine balanced_alpha(minG, minR, cellMeasure, tolerance, &
                              alpha, status)
-
-      !> 3 for a fully periodic cell, 2 for a two-dimensionally periodic one.
-      integer, intent(in) :: dim
 
       !> Length of the shortest physical reciprocal lattice vector, including
       !> the factor of 2*pi.
@@ -93,7 +90,7 @@ contains
       !> Length of the shortest real-space lattice vector.
       real(dp), intent(in) :: minR
 
-      !> Volume for dim = 3, area for dim = 2.
+      !> Volume of the 3d-periodic cell.
       real(dp), intent(in) :: cellMeasure
 
       !> How closely the condition has to be met.  Callers pass their accuracy
@@ -173,15 +170,8 @@ contains
          g4 = 4.0_dp*minG
          g5 = 5.0_dp*minG
 
-         if (dim == 3) then
-            f4 = (4.0_dp*pi/cellMeasure)*exp(-(g4**2)/(4.0_dp*alphaTrial**2))/g4**2
-            f5 = (4.0_dp*pi/cellMeasure)*exp(-(g5**2)/(4.0_dp*alphaTrial**2))/g5**2
-         else
-            ! Over two directions the weight falls off as one power of the
-            ! wavenumber rather than two, and the area replaces the volume.
-            f4 = (pi/(cellMeasure*g4))*exp(-(g4**2)/(4.0_dp*alphaTrial**2))
-            f5 = (pi/(cellMeasure*g5))*exp(-(g5**2)/(4.0_dp*alphaTrial**2))
-         end if
+         f4 = (4.0_dp*pi/cellMeasure)*exp(-(g4**2)/(4.0_dp*alphaTrial**2))/g4**2
+         f5 = (4.0_dp*pi/cellMeasure)*exp(-(g5**2)/(4.0_dp*alphaTrial**2))/g5**2
 
          imbalanceValue = (f4 - f5) &
                           - (real_shell_term(2.0_dp*minR, alphaTrial) &

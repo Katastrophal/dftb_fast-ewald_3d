@@ -4,7 +4,7 @@ module ewald_truncation
    !>
    !> Two levels of estimate live here.  direct_cutoffs keeps only the Gaussian
    !> factor of each truncated tail and drops every prefactor; it is what the
-   !> two direct O(N^2) references use, where being conservative costs nothing
+   !> direct O(N^2) reference uses, where being conservative costs nothing
    !> that matters.  splitting_from_real_budget and cutoff_from_fourier_budget
    !> are root-mean-square estimates for a system of randomly placed charges
    !> and do keep the prefactors, which is what lets the fast methods place
@@ -17,9 +17,8 @@ module ewald_truncation
    !> modules.
    !>
    !> They were also derived for a cubic, three-dimensionally periodic box.  A
-   !> general cell has no edge length and a two-dimensionally periodic one has
-   !> no finite volume, so the caller passes the edge and volume of the cube it
-   !> considers equivalent to its own geometry.
+   !> general cell has no edge length, so the caller passes the edge of the cube
+   !> it considers equivalent to its own geometry.
    use ewald_constants, only: dp, pi
    use ewald_lambert_w, only: lambert_w0
    implicit none

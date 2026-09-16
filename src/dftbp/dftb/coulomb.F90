@@ -23,10 +23,7 @@ module dftbp_dftb_coulomb
    use dftbp_type_dynneighlist, only: TDynNeighList, TDynNeighList_init, TNeighIterator,&
        & TNeighIterator_init
    use ewald_fft_3d, only: ewald_potential_force_fft3d => ewald_potential_force
-   use ewald_fft_2d, only: ewald_potential_force_fft2d => ewald_potential_force
-   use ewald_fft_2d_parameters, only: ewald2dThin => monolayerThreshold
    use ewald_direct_3d, only: ewald_potential_force_direct3d => ewald_potential_force
-   use ewald_direct_2d, only: ewald_potential_force_direct2d => ewald_potential_force
    #:if WITH_MPI
       use dftbp_extlibs_mpifx, only: MPI_SUM, mpifx_allreduceip
    #:endif
@@ -247,34 +244,6 @@ contains
       #:endif
    end function useFftEwald
 
-   !> DFTB+ declares a 3d-periodic cell. Two-dimensional electrostatics must
-   !> therefore be requested explicitly; the in-plane basis must lie in xy.
-   function useFftEwald2d(coords, latVecs, nAtom) result(use2d)
-      real(dp), intent(in) :: coords(:, :)
-      real(dp), intent(in) :: latVecs(3, 3)
-      integer, intent(in) :: nAtom
-      logical :: use2d
-      character(len=16) :: val
-      integer :: stat
-      real(dp) :: scale, geomTol
-      logical, save :: requested = .false., known = .false.
-
-      if (.not. known) then
-         call get_environment_variable("DFTB_FFT_EWALD_2D", val, status=stat)
-         if (stat == 0) requested = trim(val) == "1" .or. trim(val) == "yes" .or. trim(val) == "true"
-         known = .true.
-      end if
-      use2d = .false.
-      if (.not. requested .or. nAtom < 1) return
-      scale = maxval(abs(latVecs))
-      if (scale <= 0.0_dp) return
-      geomTol = 1.0e-10_dp*scale
-      if (abs(latVecs(3, 1)) > geomTol .or. abs(latVecs(3, 2)) > geomTol .or. &
-          & abs(latVecs(1, 3)) > geomTol .or. abs(latVecs(2, 3)) > geomTol) &
-          & error stop "2d Ewald requires an xy-periodic cell with the third lattice vector along z"
-      use2d = .true.
-   end function useFftEwald2d
-
    function hasAtomicMatrix(this) result(available)
       class(TCoulomb), intent(in) :: this
       logical :: available
@@ -291,14 +260,11 @@ contains
       if (.not. canUse) return
       absoluteCharge = sum(abs(this%deltaQAtom_))
       if (abs(sum(this%deltaQAtom_)) > 1.0e-8_dp*absoluteCharge) then
-         if (useFftEwald2d(this%coords_, this%latVecs_, this%nAtom_)) &
-            error stop "2d Ewald requires a charge-neutral cell"
          canUse = .false.
       end if
    end function canUseEwaldCode
 
-   !> Whether the direct reference from ewald_direct_3d or ewald_direct_2d
-   !> replaces the fast engine.  Controlled by
+   !> Whether the direct 3d reference replaces the fast engine.  Controlled by
    !> DFTB_EWALD_DIRECT ("1"/"yes"/"true" to enable, off by default) and reached
    !> only when the FFT path is active at all, so DFTB_FFT_EWALD=0 still selects
    !> the stock engine.
@@ -307,10 +273,7 @@ contains
    !> Ewald part.  Differencing two engines at frozen charges and identical
    !> geometry cancels every non-Ewald term exactly, so with the reference
    !> evaluated in-code the deviation of an engine from it becomes measurable
-   !> for the force as it already is for the potential.  Which of the two
-   !> geometries the reference is summed over follows the same dispatch as the
-   !> fast engines (useFftEwald2d), so the reference and the engine it judges
-   !> always evaluate the same lattice sum.
+   !> for the force as it already is for the potential.
    function useDirectEwald() result(useDirect)
       logical :: useDirect
       character(len=16) :: val
@@ -355,27 +318,15 @@ contains
 
    !> Report which engine served the geometry, once per run, so a comparison
    !> script records the choice instead of inferring it.
-   subroutine reportFftEwaldEngine(use2d, thickness)
-      logical, intent(in) :: use2d
-      real(dp), intent(in) :: thickness
+   subroutine reportFftEwaldEngine()
       logical, save :: done = .false.
       if (done) return
       done = .true.
       if (useDirectEwald()) then
-         if (use2d) then
-            print *, "Ewald engine: direct O(N^2) reference, 2d-periodic"
-         else
-            print *, "Ewald engine: direct O(N^2) reference, 3d-periodic"
-         end if
+         print *, "Ewald engine: direct O(N^2) reference, 3d-periodic"
          return
       end if
-      if (.not. use2d) then
-         print *, "FFT Ewald engine: 3d-periodic"
-      else if (thickness > ewald2dThin) then
-         print *, "FFT Ewald engine: 2d-periodic, finite-thickness path"
-      else
-         print *, "FFT Ewald engine: 2d-periodic, monolayer path"
-      end if
+      print *, "FFT Ewald engine: 3d-periodic"
    end subroutine reportFftEwaldEngine
 
    !> Per-atom Ewald potential used as the SCC shift. The fast path evaluates
@@ -389,7 +340,6 @@ contains
       real(dp), allocatable :: positions(:, :)
       real(dp) :: latm(3, 3), tol
       integer :: iAt
-      logical :: use2d
       allocate (positions(this%nAtom_, 3))
       do iAt = 1, this%nAtom_
          positions(iAt, :) = coords(:, iAt)
@@ -397,18 +347,10 @@ contains
       latm = transpose(this%latVecs_)
       tol = this%tolEwald_
       if (tol <= 0.0_dp .or. tol >= 1.0_dp) tol = 1.0e-9_dp
-      use2d = useFftEwald2d(coords, this%latVecs_, this%nAtom_)
-      call reportFftEwaldEngine(use2d, maxval(positions(:, 3)) - minval(positions(:, 3)))
+      call reportFftEwaldEngine()
       if (useDirectEwald()) then
-         if (use2d) then
-            call ewald_potential_force_direct2d(positions, this%deltaQAtom_, this%nAtom_, latm, &
-                                                 directEwaldTol(tol), shift)
-         else
-            call ewald_potential_force_direct3d(positions, this%deltaQAtom_, this%nAtom_, latm, &
-                                              directEwaldTol(tol), shift)
-         end if
-      else if (use2d) then
-         call ewald_potential_force_fft2d(positions, this%deltaQAtom_, this%nAtom_, latm, tol, shift)
+         call ewald_potential_force_direct3d(positions, this%deltaQAtom_, this%nAtom_, latm, &
+                                           directEwaldTol(tol), shift)
       else
          call ewald_potential_force_fft3d(positions, this%deltaQAtom_, this%nAtom_, latm, tol, shift)
       end if
@@ -423,7 +365,6 @@ contains
       real(dp), allocatable :: positions(:, :), pot(:), force(:, :)
       real(dp) :: latm(3, 3), tol
       integer :: iAt
-      logical :: use2d
       allocate (positions(this%nAtom_, 3), pot(this%nAtom_), force(3, this%nAtom_))
       do iAt = 1, this%nAtom_
          positions(iAt, :) = coords(:, iAt)
@@ -431,22 +372,10 @@ contains
       latm = transpose(this%latVecs_)
       tol = this%tolEwald_
       if (tol <= 0.0_dp .or. tol >= 1.0_dp) tol = 1.0e-9_dp
-      use2d = useFftEwald2d(coords, this%latVecs_, this%nAtom_)
-      call reportFftEwaldEngine(use2d, maxval(positions(:, 3)) - minval(positions(:, 3)))
+      call reportFftEwaldEngine()
       if (useDirectEwald()) then
-         if (use2d) then
-            call ewald_potential_force_direct2d(positions, this%deltaQAtom_, this%nAtom_, latm, &
-                                                 directEwaldTol(tol), pot, force)
-         else
-            call ewald_potential_force_direct3d(positions, this%deltaQAtom_, this%nAtom_, latm, &
-                                              directEwaldTol(tol), pot, force)
-         end if
-      else if (use2d) then
-         ! The force normal to a coplanar layer vanishes by reflection symmetry
-         ! and the engine returns it as an exact zero; a slab has no such
-         ! symmetry and gets all three components from the slab transform.
-         call ewald_potential_force_fft2d(positions, this%deltaQAtom_, this%nAtom_, latm, tol, &
-                                       pot, force)
+         call ewald_potential_force_direct3d(positions, this%deltaQAtom_, this%nAtom_, latm, &
+                                           directEwaldTol(tol), pot, force)
       else
          call ewald_potential_force_fft3d(positions, this%deltaQAtom_, this%nAtom_, latm, tol, pot, force)
       end if
@@ -663,15 +592,6 @@ contains
 
       @:ASSERT(all(shape(latVecs) == shape(this%latVecs_)))
 
-      ! The retained 3d stress is not the derivative of a 2d Ewald energy.
-      ! Reject a varying cell rather than using it for cell optimisation.
-      if (this%cellInitialised_ .and. useFftEwald()) then
-         if (useFftEwald2d(this%coords_, this%latVecs_, this%nAtom_)) then
-            if (maxval(abs(latVecs - this%latVecs_)) > &
-                & 1.0e-10_dp*max(1.0_dp, maxval(abs(this%latVecs_)))) &
-                & error stop "2d Ewald does not support changing lattice vectors"
-         end if
-      end if
       this%latVecs_(:, :) = latVecs
       this%cellInitialised_ = .true.
 
@@ -774,10 +694,6 @@ contains
 
       ! 1/R contribution
       if (present(dQOutAtom)) then
-         if (useFftEwald() .and. this%boundaryCond_ == boundaryCondsEnum%pbc3d) then
-            if (useFftEwald2d(coords, this%latVecs_, this%nAtom_)) &
-               error stop "2d Ewald with XLBOMD gradients is not implemented"
-         end if
          if (this%boundaryCond_ == boundaryCondsEnum%pbc3d) then
             call addInvRPrimeXlbomd(env, this%nAtom_, coords, this%neighList_, this%gLatPoints_,&
                 & this%alpha, this%volume_, this%deltaQAtom_, dQOutAtom, gradients)
@@ -832,17 +748,6 @@ contains
       @:ASSERT(all(shape(stress) == [3, 3]))
 
       ! 1/R contribution
-      ! DFTB+ also asks for stress in single-point output. Its original 3d
-      ! stress is retained; it is not a derivative of the selected 2d energy.
-      if (useFftEwald() .and. this%boundaryCond_ == boundaryCondsEnum%pbc3d) then
-         if (useFftEwald2d(coords, this%latVecs_, this%nAtom_)) then
-            block
-               logical, save :: warned = .false.
-               if (.not. warned) print *, "Warning: 2d Ewald stress uses the original 3d path"
-               warned = .true.
-            end block
-         end if
-      end if
       stTmp = 0.0_dp
       call invRStress(env, this%nAtom_, coords, this%neighList_, this%gLatPoints_, this%alpha,&
           & this%volume_, this%deltaQAtom_, stTmp)
@@ -899,7 +804,7 @@ contains
       integer, intent(in) :: img2CentCell(:)
 
       #:if WITH_SCALAPACK
-         real(dp), pointer :: deltaQAtom2D(:, :), shiftPerAtom2D(:, :)
+         real(dp), pointer :: deltaQAtomLocal(:, :), shiftPerAtomLocal(:, :)
          integer :: ll
       #:endif
 
@@ -911,14 +816,14 @@ contains
       #:if WITH_SCALAPACK
          if (env%blacs%atomGrid%iproc /= -1) then
             ll = size(this%deltaQAtom_)
-            deltaQAtom2D(1:1, 1:ll) => this%deltaQAtom_
+            deltaQAtomLocal(1:1, 1:ll) => this%deltaQAtom_
             ll = size(this%shiftPerAtom_)
-            shiftPerAtom2D(1:1, 1:ll) => this%shiftPerAtom_
-            call scalafx_cpl2g(env%blacs%atomGrid, deltaQAtom2D, this%descQVec_, 1, 1, this%qGlobal_)
+            shiftPerAtomLocal(1:1, 1:ll) => this%shiftPerAtom_
+            call scalafx_cpl2g(env%blacs%atomGrid, deltaQAtomLocal, this%descQVec_, 1, 1, this%qGlobal_)
             call pblasfx_psymv(this%invRMat, this%descInvRMat_, this%qGlobal_, this%descQVec_,&
                 & this%shiftPerAtomGlobal_, this%descQVec_)
             call scalafx_cpg2l(env%blacs%atomGrid, this%descQVec_, 1, 1, this%shiftPerAtomGlobal_,&
-                & shiftPerAtom2D)
+                & shiftPerAtomLocal)
          end if
          call mpifx_allreduceip(env%mpi%groupComm, this%shiftPerAtom_, MPI_SUM)
       #:else

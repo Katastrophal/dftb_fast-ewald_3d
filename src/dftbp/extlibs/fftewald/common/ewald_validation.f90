@@ -1,5 +1,5 @@
 module ewald_validation
-   !> Input validation and numerical guards shared by all four methods.
+   !> Input validation and numerical guards shared by the 3d methods.
    use ewald_constants, only: dp
    implicit none
 
@@ -8,10 +8,8 @@ module ewald_validation
    public :: minSeparationSquared, minWavenumberSquared
 
    !> Squared separation below which two charges count as coincident.  A pair at
-   !> zero distance has an infinite bare interaction, so this is normally an
-   !> input error rather than something to be regularised away; the fast
-   !> two-dimensional real-space branch is the one place that uses it as a
-   !> filter instead, and says so at the use site.
+   !> zero distance has an infinite bare interaction, so this is an input error
+   !> rather than something to be regularised away.
    real(dp), parameter :: minSeparationSquared = 1.0e-24_dp
 
    !> Squared wavenumber below which a Fourier mode counts as the zero mode.

@@ -613,7 +613,7 @@ contains
       shortestLatticeVector = minval(cell%latLengths)
       shortestWaveVector = 2.0_dp*pi*minval(cell%recLengths)
 
-      call balanced_alpha(3, shortestWaveVector, shortestLatticeVector, cell%volume, &
+      call balanced_alpha(shortestWaveVector, shortestLatticeVector, cell%volume, &
                  tolerance, alpha, status)
 
       if (status /= alphaSearchStatus%converged) then
