@@ -24,14 +24,6 @@ module nfft
    !> error falls exponentially in m while the cost grows like m to the power
    !> of the dimension, which is why m is derived from the requested accuracy.
    !>
-   !> spread_charges_real_3d is an energy-only shortcut.  The Ewald
-   !> energy needs only the squared magnitudes of the structure factors and the
-   !> spread grid is purely real, so a caller in that situation can spread onto
-   !> a real grid, run a real-input FFT itself and fold the deconvolution into
-   !> its own mode sum, which halves the grid memory.  The routine therefore
-   !> stops after step 1 and exports the window parameters so that the caller can
-   !> finish with exactly the same window.
-   !>
    !> Modes come back in the usual FFT bin order: array index a in 0..M-1 holds
    !> the signed mode mode_of_bin(a, M).
    use ewald_constants, only: dp, pi
@@ -41,7 +33,6 @@ module nfft
    private
    public :: adjoint_nfft_3d
    public :: forward_nfft_3d
-   public :: spread_charges_real_3d
    public :: mode_of_bin, window_shape, window_cutoff_from_budget
    public :: oversampling
 
@@ -413,72 +404,7 @@ contains
    end subroutine forward_nfft_3d
 
    ! =====================================================================
-   !  Energy-only spreading onto a real grid
+   !  End of NFFT transforms
    ! =====================================================================
-
-   !> Spread charges onto a padded real grid in three dimensions.
-   subroutine spread_charges_real_3d(nParticle, t1, t2, t3, q, n1, n2, n3, m, grid)
-
-      !> Number of charges.
-      integer, intent(in) :: nParticle
-
-      !> First coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t1(nParticle)
-
-      !> Second coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t2(nParticle)
-
-      !> Third coordinate of each node, on the unit torus.
-      real(dp), intent(in) :: t3(nParticle)
-
-      !> Charge carried by each node.
-      real(dp), intent(in) :: q(nParticle)
-
-      !> Logical extent of the fine grid along the first axis.
-      integer, intent(in) :: n1
-
-      !> Extent of the fine grid along the second axis.
-      integer, intent(in) :: n2
-
-      !> Extent of the fine grid along the third axis.
-      integer, intent(in) :: n3
-
-      !> Stencil half-width.
-      integer, intent(in) :: m
-
-      !> Padded real grid, accumulated into.
-      real(dp), intent(inout) :: grid(0:2*(n1/2 + 1) - 1, 0:n2 - 1, 0:n3 - 1)
-
-      integer  :: j, o1, o2, o3, c1, c2, c3, i1, i2, i3
-      real(dp) :: b
-      real(dp) :: chargeTimesWeight
-      real(dp) :: w1(-m:m), w2(-m:m), w3(-m:m)
-
-      b = window_shape(m)
-
-      !$omp parallel do default(shared) &
-      !$omp private(j, c1, c2, c3, w1, w2, w3, o1, o2, o3, i1, i2, i3, chargeTimesWeight) &
-      !$omp schedule(guided)
-      do j = 1, nParticle
-         if (q(j) == 0.0_dp) cycle
-         call stencil_weights(t1(j), n1, m, b, c1, w1)
-         call stencil_weights(t2(j), n2, m, b, c2, w2)
-         call stencil_weights(t3(j), n3, m, b, c3, w3)
-         do o3 = -m, m
-            i3 = modulo(c3 + o3, n3)
-            do o2 = -m, m
-               i2 = modulo(c2 + o2, n2)
-               chargeTimesWeight = q(j)*w2(o2)*w3(o3)
-               do o1 = -m, m
-                  i1 = modulo(c1 + o1, n1)
-                  !$omp atomic update
-                  grid(i1, i2, i3) = grid(i1, i2, i3) + chargeTimesWeight*w1(o1)
-               end do
-            end do
-         end do
-      end do
-      !$omp end parallel do
-
-   end subroutine spread_charges_real_3d
 
 end module nfft

@@ -3,19 +3,11 @@
 This fork adds a matrix-free fast Ewald operator for the long-range Coulomb part of three-dimensionally periodic SCC-DFTB. It is currently an opt-in path:
 
 ```sh
-DFTB_FFT_EWALD=1 dftb+
+DFTB_FFT_EWALD=1
 ```
 
 The 3D fast path is used only for a charge-neutral, 3D-periodic SCC calculation in a serial or OpenMP build. Unset `DFTB_FFT_EWALD`, set it to `0`, or use an MPI/ScaLAPACK build to retain the original DFTB+ engine.
 
-## How the fast path works
-
-The implementation is a conventional Ewald split with fast algorithms on both sides:
-
-- The real-space screened sum is evaluated with a linked-cell neighbour search. Small cells, for which the minimum image is not unique, use an explicit real-space image sum.
-- The reciprocal-space sum uses a non-uniform FFT (NFFT): charges are spread to a grid, an FFT produces the structure factors, the Ewald kernel is applied in Fourier space, and the result is interpolated back to the atoms.
-- The self interaction is added analytically. The splitting parameter, real- and reciprocal-space cutoffs, FFT mode counts, and NFFT window are selected automatically from the cell, charges, and DFTB+ `EwaldTolerance`.
-- The resulting work is approximately `O(N + M log M)`, where `M` is the FFT-grid size. No atomic `N x N` interaction matrix is needed for the ordinary fast calculation.
 
 The DFTB+ integration is concentrated in [`coulomb.F90`](src/dftbp/dftb/coulomb.F90):
 

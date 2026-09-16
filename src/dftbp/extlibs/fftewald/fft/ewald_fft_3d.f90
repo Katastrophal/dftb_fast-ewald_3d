@@ -8,15 +8,15 @@ module ewald_fft_3d
    use ewald_constants, only: dp
    use ewald_geometry, only: TCell3d, cell_metrics_3d
    use ewald_validation, only: check_configuration
-   use ewald_self, only: self_energy, self_potential
+   use ewald_self, only: self_potential
    use ewald_fft_3d_parameters, only: TEwaldParameters3d, choose_parameters, &
                                       grid_memory_gigabytes
-   use ewald_fft_3d_real, only: short_range_energy, short_range_potential_force
-   use ewald_fft_3d_fourier, only: long_range_energy, long_range_potential_force
+   use ewald_fft_3d_real, only: short_range_potential_force
+   use ewald_fft_3d_fourier, only: long_range_potential_force
    implicit none
 
    private
-   public :: ewald_energy, ewald_potential_force, ewald_parameters, ewald_grid_memory
+   public :: ewald_potential_force, ewald_parameters, ewald_grid_memory
    public :: TEwaldParameters3d
 
    !> Accuracy used when the caller does not request one.
@@ -24,99 +24,17 @@ module ewald_fft_3d
 
 contains
 
-   !> Total electrostatic energy of the periodic cell.
-   function ewald_energy(positions, charges, nParticle, latVecs, tol, &
-                         alpha_in, r_cut_in, k_cut_in, nModes_in, windowCutoff_in, &
-                         phaseTimes) result(energy)
-
-      !> Cartesian positions, positions(i, :) being the i-th charge.
-      real(dp), intent(in) :: positions(:, :)
-
-      !> Charges, in units where the Coulomb prefactor is one.
-      real(dp), intent(in) :: charges(:)
-
-      !> Number of charges in the cell.
-      integer, intent(in) :: nParticle
-
-      !> Lattice vectors, one per row.
-      real(dp), intent(in) :: latVecs(3, 3)
-
-      !> Requested accuracy.  Defaults to 1e-10.
-      real(dp), intent(in), optional :: tol
-
-      !> Override for the splitting parameter.
-      real(dp), intent(in), optional :: alpha_in
-
-      !> Override for the real-space cutoff radius.
-      real(dp), intent(in), optional :: r_cut_in
-
-      !> Override for the Fourier cutoff wavenumber.
-      real(dp), intent(in), optional :: k_cut_in
-
-      !> Override for the mode count, applied to all three axes.
-      integer, intent(in), optional :: nModes_in
-
-      !> Override for the window stencil half-width.
-      integer, intent(in), optional :: windowCutoff_in
-
-      !> Wall time in seconds of the five phases of one evaluation, as
-      !> [short range, spread, transform, extract, mode sum].  For profiling
-      !> only; the evaluation is unaffected by asking for it.
-      real(dp), intent(out), optional :: phaseTimes(5)
-
-      !> Total energy of the cell.
-      real(dp) :: energy
-
-      type(TCell3d) :: cell
-      type(TEwaldParameters3d) :: params
-      real(dp) :: tolerance
-      real(dp) :: chargeSquareSum      ! sum_i q_i^2
-      real(dp) :: shortRangeEnergy
-      real(dp) :: longRangeEnergy
-      real(dp) :: shortRangeTime
-      real(dp) :: longRangeTimes(4)
-      integer(8) :: tick0, tick1, tickRate
-
-      call check_configuration("ewald_fft_3d", positions, charges, nParticle)
-
-      cell = cell_metrics_3d(latVecs)
-
-      tolerance = defaultTolerance
-      if (present(tol)) tolerance = tol
-      if (tolerance <= 0.0_dp .or. tolerance >= 1.0_dp) &
-         error stop "ewald_fft_3d: tol must lie in (0,1)"
-
-      chargeSquareSum = sum(charges(1:nParticle)**2)
-      call choose_parameters(cell, chargeSquareSum, nParticle, tolerance, params, &
-                             alpha_in, r_cut_in, k_cut_in, nModes_in, windowCutoff_in)
-
-      call system_clock(tick0, tickRate)
-      shortRangeEnergy = short_range_energy(positions, charges, nParticle, cell, &
-                                            params%alpha, params%r_cut)
-      call system_clock(tick1)
-      shortRangeTime = real(tick1 - tick0, dp)/real(tickRate, dp)
-
-      longRangeEnergy = long_range_energy(positions, charges, nParticle, cell%recVecs, &
-                                          cell%volume, params%alpha, params%nModes, &
-                                          params%windowCutoff, longRangeTimes)
-
-      energy = shortRangeEnergy + longRangeEnergy &
-               + self_energy(charges, nParticle, params%alpha)
-
-      if (present(phaseTimes)) phaseTimes = [shortRangeTime, longRangeTimes]
-
-   end function ewald_energy
-
    !> Electrostatic potential at each charge and the force acting on it: the
    !> quantities a self-consistent-charge electronic-structure code consumes.
-   !> The splitting and the parameter chain are those of ewald_energy; what is
-   !> added is the interpolation of the Fourier field back to the particles.
+   !> The splitting and parameter chain are selected for the requested
+   !> potential/force evaluation; the Fourier field is interpolated back to the
+   !> particles.
    !>
    !> The force argument is optional, and omitting it saves three of the four
    !> transforms, which is worth doing inside a self-consistency cycle that
    !> needs the potential at every iteration but the force only once.
    subroutine ewald_potential_force(positions, charges, nParticle, latVecs, tol, &
-                                    pot, force, energy, alpha_in, r_cut_in, k_cut_in, &
+                                    pot, force, alpha_in, r_cut_in, k_cut_in, &
                                     nModes_in, windowCutoff_in)
 
       !> Cartesian positions, positions(i, :) being the i-th charge.
@@ -142,9 +60,6 @@ contains
       !> its negative.
       real(dp), intent(out), optional :: force(:, :)
 
-      !> Total energy, identical to what ewald_energy returns.
-      real(dp), intent(out), optional :: energy
-
       !> Override for the splitting parameter.
       real(dp), intent(in), optional :: alpha_in
 
@@ -164,8 +79,6 @@ contains
       type(TEwaldParameters3d) :: params
       real(dp) :: tolerance
       real(dp) :: chargeSquareSum
-      real(dp) :: shortRangeEnergy
-      real(dp) :: longRangeEnergy
       real(dp), allocatable :: shortRangePot(:), longRangePot(:)
       real(dp), allocatable :: shortRangeForce(:, :), longRangeForce(:, :)
       integer :: i
@@ -198,13 +111,11 @@ contains
       if (present(force)) then
          call long_range_potential_force(positions, charges, nParticle, cell%recVecs, &
                                          cell%volume, params%alpha, params%nModes, &
-                                         params%windowCutoff, longRangeEnergy, &
-                                         longRangePot, longRangeForce)
+                                         params%windowCutoff, longRangePot, longRangeForce)
       else
          call long_range_potential_force(positions, charges, nParticle, cell%recVecs, &
                                          cell%volume, params%alpha, params%nModes, &
-                                         params%windowCutoff, longRangeEnergy, &
-                                         longRangePot)
+                                         params%windowCutoff, longRangePot)
       end if
 
       ! The self term is the same at every atom and independent of the
@@ -218,15 +129,6 @@ contains
          do i = 1, nParticle
             force(:, i) = shortRangeForce(:, i) + longRangeForce(:, i)
          end do
-      end if
-
-      if (present(energy)) then
-         ! The short-range energy is recovered exactly from its own potential,
-         ! which is cheaper than summing the pairs a second time.
-         shortRangeEnergy = 0.5_dp*dot_product(charges(1:nParticle), &
-                                               shortRangePot(1:nParticle))
-         energy = shortRangeEnergy + longRangeEnergy &
-                  + self_energy(charges, nParticle, params%alpha)
       end if
 
    end subroutine ewald_potential_force
@@ -292,7 +194,7 @@ contains
    !> sweeping the system size or the accuracy can gate on it before trying an
    !> evaluation that would not fit.  The prediction runs the same parameter
    !> chain the evaluation does.
-   function ewald_grid_memory(charges, nParticle, latVecs, tol, potentialForcePath, &
+   function ewald_grid_memory(charges, nParticle, latVecs, tol, &
                               alpha_in, r_cut_in, k_cut_in, nModes_in, windowCutoff_in) &
       result(gigabytes)
 
@@ -308,9 +210,6 @@ contains
 
       !> Requested accuracy.
       real(dp), intent(in), optional :: tol
-
-      !> Predict the potential and force path instead of the energy path.
-      logical, intent(in), optional :: potentialForcePath
 
       !> Override for the splitting parameter.
       real(dp), intent(in), optional :: alpha_in
@@ -339,7 +238,7 @@ contains
       if (present(tol)) tolerance = tol
 
       gigabytes = grid_memory_gigabytes(cell, sum(charges(1:nParticle)**2), nParticle, &
-                                        tolerance, potentialForcePath, alpha_in, &
+                                        tolerance, alpha_in, &
                                         r_cut_in, k_cut_in, nModes_in, windowCutoff_in)
 
    end function ewald_grid_memory

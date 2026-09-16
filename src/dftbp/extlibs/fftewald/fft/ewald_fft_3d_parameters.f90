@@ -101,9 +101,8 @@ contains
          ! The linked-cell scheme needs at least three boxes along every axis,
          ! each at least as wide as the cutoff; a wider cutoff would silently
          ! drop the short range back to a quadratic image sum.  The splitting
-         ! parameter is rebalanced against whatever cutoff survives the cap, and
-         ! the energy does not depend on the splitting, so capping costs no
-         ! accuracy.  It is applied only when it still leaves a cutoff well
+         ! parameter is rebalanced against whatever cutoff survives the cap.  It
+         ! is applied only when it still leaves a cutoff well
          ! above the mean spacing: for a genuinely small cell the image sum is
          ! valid and inexpensive.
          cellListLimit = 0.999_dp/(3.0_dp*maxval(cell%recLengths))
@@ -123,9 +122,8 @@ contains
 
       ! --- 3. Fourier cutoff -------------------------------------------------
       ! The estimate is written for a cubic box, so the cell is represented by
-      ! the cube of the same volume.  The energy is not sensitive to that
-      ! choice: it only shifts where the mode set is truncated, and the
-      ! per-axis mode counts below use the true cell shape.
+      ! the cube of the same volume.  The cutoff estimate is then combined with
+      ! per-axis mode counts from the true cell shape.
       params%k_cut = cutoff_from_fourier_budget(chargeSquareSum, nParticle, &
                                                 cell%volume**(1.0_dp/3.0_dp), &
                                                 params%alpha, tolerance)
@@ -174,12 +172,10 @@ contains
    !> counted; the cell list and the particle arrays are linear in the particle
    !> number and negligible beside them.
    !>
-   !> The energy path allocates a single padded real grid, which the real-input
-   !> transform overwrites with its half spectrum.  The potential and force
-   !> path cannot use that shortcut and holds the full complex fine grid
-   !> together with two mode arrays, roughly two and a half times as much.
+   !> The potential and force path holds the full complex fine grid together
+   !> with two mode arrays.
    function grid_memory_gigabytes(cell, chargeSquareSum, nParticle, tolerance, &
-                                  potentialForcePath, alpha_in, r_cut_in, k_cut_in, &
+                                  alpha_in, r_cut_in, k_cut_in, &
                                   nModes_in, windowCutoff_in) result(gigabytes)
 
       !> Geometry of the cell.
@@ -193,9 +189,6 @@ contains
 
       !> Requested accuracy.
       real(dp), intent(in) :: tolerance
-
-      !> Predict the potential and force path instead of the energy path.
-      logical, intent(in), optional :: potentialForcePath
 
       !> Override for the splitting parameter.
       real(dp), intent(in), optional :: alpha_in
@@ -218,7 +211,6 @@ contains
       type(TEwaldParameters3d) :: params
       integer  :: n1, n2, n3        ! fine grid extents
       real(dp) :: nElements         ! number of array entries at the peak
-      logical  :: forcePath
 
       call choose_parameters(cell, chargeSquareSum, nParticle, tolerance, params, &
                              alpha_in, r_cut_in, k_cut_in, nModes_in, windowCutoff_in)
@@ -227,22 +219,12 @@ contains
       n2 = oversampling*params%nModes(2)
       n3 = oversampling*params%nModes(3)
 
-      forcePath = .false.
-      if (present(potentialForcePath)) forcePath = potentialForcePath
-
-      if (forcePath) then
-         ! Complex fine grid, plus the coefficient array and the temporary that
-         ! coexist with it while the force components are transformed.
-         nElements = real(n1, dp)*real(n2, dp)*real(n3, dp) &
-                     + 2.0_dp*real(params%nModes(1), dp)*real(params%nModes(2), dp) &
-                     *real(params%nModes(3), dp)
-         gigabytes = nElements*16.0_dp/(1024.0_dp**3)
-      else
-         ! One padded real grid; the padding of the first axis is what makes
-         ! the real-input transform in place.
-         nElements = real(2*(n1/2 + 1), dp)*real(n2, dp)*real(n3, dp)
-         gigabytes = nElements*8.0_dp/(1024.0_dp**3)
-      end if
+      ! Complex fine grid, plus the coefficient array and the temporary that
+      ! coexist with it while the force components are transformed.
+      nElements = real(n1, dp)*real(n2, dp)*real(n3, dp) &
+                  + 2.0_dp*real(params%nModes(1), dp)*real(params%nModes(2), dp) &
+                  *real(params%nModes(3), dp)
+      gigabytes = nElements*16.0_dp/(1024.0_dp**3)
 
    end function grid_memory_gigabytes
 

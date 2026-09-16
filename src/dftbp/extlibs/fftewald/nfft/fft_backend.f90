@@ -21,7 +21,6 @@ module fft_backend
 
    private
    public :: fft_3d_inplace
-   public :: fft_3d_real_to_complex
    public :: next_fast_length, minTransformLength
 
    !> Shortest transform the library will use along any axis.  Below this the
@@ -57,35 +56,6 @@ contains
       call fftw_destroy_plan(plan)
 
    end subroutine fft_3d_inplace
-
-   ! =====================================================================
-   !  Real-input transforms
-   ! =====================================================================
-
-   !> Three-dimensional in-place transform of a real grid.  The two arrays
-   !> alias the same storage: the real grid is padded along its first dimension
-   !> and the complex view receives the half spectrum.
-   subroutine fft_3d_real_to_complex(realGrid, complexGrid, n1, n2, n3)
-      integer, intent(in) :: n1
-      integer, intent(in) :: n2
-      integer, intent(in) :: n3
-
-      !> Padded real grid: logical extent (n1, n2, n3), leading dimension
-      !> 2*(n1/2+1).  Overwritten by the transform.
-      real(dp), intent(inout) :: realGrid(0:2*(n1/2 + 1) - 1, 0:n2 - 1, 0:n3 - 1)
-
-      !> Complex view of the same storage, receiving the half spectrum.
-      complex(dp), intent(inout) :: complexGrid(0:n1/2, 0:n2 - 1, 0:n3 - 1)
-
-      type(C_PTR) :: plan
-
-      call plan_over_all_threads()
-      plan = fftw_plan_dft_r2c_3d(int(n3, C_INT), int(n2, C_INT), int(n1, C_INT), &
-                                  realGrid, complexGrid, FFTW_ESTIMATE)
-      call fftw_execute_dft_r2c(plan, realGrid, complexGrid)
-      call fftw_destroy_plan(plan)
-
-   end subroutine fft_3d_real_to_complex
 
    ! =====================================================================
    !  Transform lengths and threading

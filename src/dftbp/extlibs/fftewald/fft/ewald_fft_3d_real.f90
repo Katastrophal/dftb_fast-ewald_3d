@@ -10,169 +10,23 @@ module ewald_fft_3d_real
    !>
    !> The linked-cell path assumes the minimum-image convention, which requires
    !> at least three boxes along every axis.  A cell too small for that falls
-   !> back on the direct reference's own explicit image sum, for the energy and
-   !> for the potential and force alike; neither is reimplemented here.
+   !> back on the direct reference's own explicit image sum; neither is
+   !> reimplemented here.
    use ewald_constants, only: dp, sqrt_pi
    use ewald_geometry, only: TCell3d
    use ewald_cell_list, only: TCellList3d, build_cell_list_3d, box_counts_3d, &
                               box_index, minBoxesPerAxis
    use ewald_validation, only: minSeparationSquared
-   use ewald_direct_3d, only: direct_real_space_energy => real_space_energy, &
-                              direct_real_space_potential_force => real_space_potential_force
+   use ewald_direct_3d, only: direct_real_space_potential_force => real_space_potential_force
    implicit none
 
    private
-   public :: short_range_energy, short_range_energy_cell_list
    public :: short_range_potential_force
 
 contains
 
-   !> Real-space contribution to the energy, by whichever path the cell allows.
-   function short_range_energy(positions, charges, nParticle, cell, alpha, r_cut) &
-      result(energy)
-
-      !> Cartesian positions, positions(i, :) being the i-th charge.
-      real(dp), intent(in) :: positions(:, :)
-
-      !> Charges.
-      real(dp), intent(in) :: charges(:)
-
-      !> Number of charges.
-      integer, intent(in) :: nParticle
-
-      !> Geometry of the cell.
-      type(TCell3d), intent(in) :: cell
-
-      !> Splitting parameter.
-      real(dp), intent(in) :: alpha
-
-      !> Real-space cutoff radius.
-      real(dp), intent(in) :: r_cut
-
-      !> Real-space contribution to the total energy.
-      real(dp) :: energy
-
-      integer :: nBoxes(3)
-
-      nBoxes = box_counts_3d(cell%recLengths, r_cut)
-
-      if (minval(nBoxes) >= minBoxesPerAxis) then
-         energy = short_range_energy_cell_list(positions, charges, nParticle, cell, &
-                                               alpha, r_cut, nBoxes)
-      else
-         ! The cell is too small for the minimum image to be unique, so the
-         ! images have to be enumerated.  This is the direct reference's own
-         ! real-space sum, reused rather than reimplemented.
-         energy = direct_real_space_energy(positions, charges, nParticle, cell, &
-                                           alpha, r_cut)
-      end if
-
-   end function short_range_energy
-
-   !> Real-space contribution to the energy through the linked-cell
-   !> decomposition.  Each charge is compared with everything in its own box
-   !> and in the twenty-six neighbouring ones, the nearest image of each
-   !> partner being selected by rounding the fractional separation.  That is
-   !> why the caller must have checked that three boxes fit along every axis.
-   function short_range_energy_cell_list(positions, charges, nParticle, cell, &
-                                         alpha, r_cut, nBoxes) result(energy)
-
-      !> Cartesian positions, positions(i, :) being the i-th charge.
-      real(dp), intent(in) :: positions(:, :)
-
-      !> Charges.
-      real(dp), intent(in) :: charges(:)
-
-      !> Number of charges.
-      integer, intent(in) :: nParticle
-
-      !> Geometry of the cell.
-      type(TCell3d), intent(in) :: cell
-
-      !> Splitting parameter.
-      real(dp), intent(in) :: alpha
-
-      !> Real-space cutoff radius.
-      real(dp), intent(in) :: r_cut
-
-      !> Number of boxes along each axis, from box_counts_3d.
-      integer, intent(in) :: nBoxes(3)
-
-      !> Real-space contribution to the total energy.
-      real(dp) :: energy
-
-      type(TCellList3d) :: list
-      real(dp) :: a1(3), a2(3), a3(3)     ! lattice vectors
-      real(dp) :: cutoffSquared
-      integer  :: i, j
-      integer  :: ix, iy, iz              ! box of charge i
-      integer  :: dx, dy, dz              ! offsets to a neighbouring box
-      integer  :: jx, jy, jz              ! box being scanned
-      real(dp) :: ds1, ds2, ds3           ! fractional separation, nearest image
-      real(dp) :: separationVector(3)
-      real(dp) :: separationSquared, separation
-
-      a1 = cell%latVecs(1, :)
-      a2 = cell%latVecs(2, :)
-      a3 = cell%latVecs(3, :)
-      cutoffSquared = r_cut*r_cut
-
-      call build_cell_list_3d(positions, nParticle, cell%recVecs, nBoxes, list)
-
-      energy = 0.0_dp
-
-      ! The loop runs over charges rather than boxes, because the number of
-      ! charges per box varies and a per-charge schedule balances better.  Each
-      ! pair is met twice, once from each end, hence the factor of one half.
-      !$omp parallel do default(shared) &
-      !$omp private(ix, iy, iz, dx, dy, dz, jx, jy, jz, j, ds1, ds2, ds3) &
-      !$omp private(separationVector, separationSquared, separation) &
-      !$omp reduction(+:energy) schedule(guided)
-      do i = 1, nParticle
-         ix = box_index(list%frac1(i), nBoxes(1))
-         iy = box_index(list%frac2(i), nBoxes(2))
-         iz = box_index(list%frac3(i), nBoxes(3))
-
-         do dz = -1, 1
-            jz = modulo(iz + dz, nBoxes(3))
-            do dy = -1, 1
-               jy = modulo(iy + dy, nBoxes(2))
-               do dx = -1, 1
-                  jx = modulo(ix + dx, nBoxes(1))
-
-                  j = list%head(jx, jy, jz)
-                  do while (j /= 0)
-                     if (j /= i) then
-                        ! Rounding the fractional separation to the nearest
-                        ! integer picks the closest periodic image.
-                        ds1 = list%frac1(i) - list%frac1(j); ds1 = ds1 - nint(ds1)
-                        ds2 = list%frac2(i) - list%frac2(j); ds2 = ds2 - nint(ds2)
-                        ds3 = list%frac3(i) - list%frac3(j); ds3 = ds3 - nint(ds3)
-                        separationVector = ds1*a1 + ds2*a2 + ds3*a3
-                        separationSquared = sum(separationVector**2)
-
-                        if (separationSquared < minSeparationSquared) &
-                           error stop "ewald_fft_3d: coincident charges"
-                        if (separationSquared <= cutoffSquared) then
-                           separation = sqrt(separationSquared)
-                           energy = energy + 0.5_dp*charges(i)*charges(j) &
-                                    *erfc(alpha*separation)/separation
-                        end if
-                     end if
-                     j = list%next(j)
-                  end do
-
-               end do
-            end do
-         end do
-      end do
-      !$omp end parallel do
-
-   end function short_range_energy_cell_list
-
    !> Real-space contribution to the per-atom potential and force, by whichever
-   !> path the cell allows.  The pair terms are those of the energy with one
-   !> charge factor removed for the potential and differentiated for the force;
+   !> path the cell allows.  The pair potential is differentiated for the force;
    !> the separation vector points from the image of the partner towards the
    !> charge, so a positive factor pushes the two apart.
    subroutine short_range_potential_force(positions, charges, nParticle, cell, &
@@ -223,9 +77,7 @@ contains
    end subroutine short_range_potential_force
 
    !> Per-atom potential and force through the linked-cell decomposition.
-   !> Mirrors short_range_energy_cell_list term for term.  Each iteration
-   !> writes only its own atom, so unlike the energy this loop needs no
-   !> reduction.
+   !> Each iteration writes only its own atom, so no reduction is needed.
    subroutine potential_force_cell_list(positions, charges, nParticle, cell, &
                                         alpha, r_cut, nBoxes, pot, force)
 
