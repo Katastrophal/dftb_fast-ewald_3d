@@ -22,7 +22,7 @@ Important integration constraints are that the fast solver currently requires ch
 
 ## Where the original DFTB+ engine is still used or required
 
-This does **not** all happen on every DFTB+ run. In a typical neutral serial/OpenMP 3D-periodic SCC calculation, the SCC potentials and ordinary forces use the fast engine. Original-engine setup and matrix allocation still occur on every such run, and the original stress routine is normally called because DFTB+ enables stress for periodic force calculations. The remaining rows are reached only by the listed calculation type or feature. Most are automatic fallbacks; the explicit-matrix interfaces instead stop and require the original engine to be selected for a new run.
+ In a typical neutral serial/OpenMP 3D-periodic SCC calculation, the SCC potentials and ordinary forces use the fast engine. Original-engine setup and matrix allocation still occur on every such run, and the original stress routine is normally called because DFTB+ enables stress for periodic force calculations. The remaining rows are reached only by the listed calculation type or feature. Most are automatic fallbacks; the explicit-matrix interfaces instead stop and require the original engine to be selected for a new run.
 
 | Remaining dependency | When is it reached with `DFTB_FFT_EWALD=1`? | Why it remains | How to remove it |
 | --- | --- | --- | --- |
